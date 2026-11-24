@@ -1,0 +1,7 @@
+BOZZI GYM 2.0 - Allenamento personale
+
+Sito statico, senza server o account. Conserva lo storico localmente.
+Per la pubblicazione su GitHub Pages: carica i file della cartella nella root del repository, includendo .nojekyll. Settings > Pages > Deploy from a branch > main / (root). Apri il link HTTPS con Safari e aggiungilo alla schermata Home.
+Quando cambia il codice, aggiorna anche la versione cache in sw.js; Pages ripubblicherà il sito allo stesso indirizzo. Il codice del sito è pubblico su GitHub Pages: non inserire backup o dati privati nel repository.
+Se passi a un indirizzo diverso, esporta e importa il backup JSON. Conserva lo stesso indirizzo per mantenere il salvataggio locale. Il backup è compatibile con la versione 1. Non caricarlo sul sito pubblico.
+Foto degli esercizi: yuhonas/free-exercise-db (Unlicense), richiedono connessione Internet al primo caricamento. Le indicazioni non sostituiscono un istruttore.
