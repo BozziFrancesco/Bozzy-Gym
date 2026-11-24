@@ -1,5 +1,5 @@
-const CACHE_NAME='atleta-hybrid-bozzi-gym-v2-2';
-const APP_FILES=['./','./index.html','./style.css?v=21','./data.js','./app.js?v=21','./manifest.webmanifest','./icons/icon-192.png','./icons/icon-512.png'];
+const CACHE_NAME='atleta-hybrid-bozzi-gym-v2-3';
+const APP_FILES=['./','./index.html','./style.css?v=21','./data.js?v=22','./app.js?v=22','./manifest.webmanifest','./icons/icon-192.png','./icons/icon-512.png'];
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE_NAME).then(cache=>cache.addAll(APP_FILES.map(path => new Request(path, {cache: 'reload'})))).then(()=>self.skipWaiting()));});
 self.addEventListener('activate',event=>{event.waitUntil(Promise.all([caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('atleta-hybrid-')&&k!==CACHE_NAME).map(k=>caches.delete(k)))),self.clients.claim()]));});
 self.addEventListener('fetch',event=>{let req=event.request;if(req.method!=='GET')return;

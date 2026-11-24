@@ -6,12 +6,21 @@ const emptyData=()=>({version:1,sessions:{},overrides:{},customExercises:[],body
 let data=emptyData();
 try {const raw=localStorage.getItem(STORE);if(raw){const saved=JSON.parse(raw);if(saved&&saved.sessions&&typeof saved.sessions==='object')data={...emptyData(),...saved};}}catch(e){console.warn('Storage unavailable',e)}
 let today=new Date();
-function nextWorkout(date) {
-  const day = (date.getDay() + 6) % 7;
-  return day < DAYS.length ? { day, shift: 0 } : { day: 0, shift: 1 };
+function rotationId() {
+  return data.prefs?.rotationId ?? 0;
 }
 
-let ui={tab:'home',...nextWorkout(today),modal:null,chart:'thu:bench',search:'',expanded:{}};
+function nextStep() {
+  const currentRotation = rotationId();
+  return Object.values(data.sessions).reduce((step, s) => {
+    if (s.completedAt && s.rotationId === currentRotation && Number.isInteger(s.rotationStep)) {
+      return Math.max(step, s.rotationStep + 1);
+    }
+    return step;
+  }, 0);
+}
+
+let ui={tab:'home',day:0,sessionKey:null,modal:null,chart:'thu:bench',search:'',expanded:{}};
 let timerEnd=0,timerHandle=0,toastHandle=0;
 const root=document.querySelector('#app');
 const modalRoot=document.querySelector('#modal-root');
@@ -21,28 +30,61 @@ const E=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt
 const money=n=>Number(n||0).toLocaleString('it-IT',{maximumFractionDigits:1});
 const num=v=>v===''||v===null||v===undefined?NaN:Number(String(v).replace(',','.'));
 const fmtkg=n=>Number.isFinite(n)?String(Math.round(n*10)/10).replace('.',','):'--';
-const minmax=(x,min,max)=>Math.max(min,Math.min(max,x));
 function save(){data.updatedAt=new Date().toISOString();try{localStorage.setItem(STORE,JSON.stringify(data));}catch(e){toast('Memoria piena o non disponibile: esporta i dati');}}
 function toast(message){toastEl.textContent=message;toastEl.classList.add('show');clearTimeout(toastHandle);toastHandle=setTimeout(()=>toastEl.classList.remove('show'),2700)}
 function monday(offset=0){let dt=new Date(today.getFullYear(),today.getMonth(),today.getDate(),12);dt.setDate(dt.getDate()-((dt.getDay()+6)%7)+7*offset);return dt;}
-function dayDate(day,shift=ui.shift){const d=monday(shift);d.setDate(d.getDate()+day);return d;}
 function keyDate(d){return [d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-')}
-function viewKey(day=ui.day,shift=ui.shift){return keyDate(dayDate(day,shift))}
+function currentSessionKey(dayId) {
+  const date = keyDate(today);
+  const step = nextStep();
+  const entries = Object.entries(data.sessions);
+  if (DAYS[step % DAYS.length].id === dayId) {
+    const draft = entries.find(([, s]) => !s.completedAt && s.dayId === dayId &&
+      s.rotationId === rotationId() && s.rotationStep === step);
+    if (draft) return draft[0];
+  }
+  const draftToday = entries.find(([, s]) => !s.completedAt && s.dayId === dayId && s.date === date &&
+    s.rotationStep == null);
+  if (draftToday) return draftToday[0];
+
+  const base = date + ':' + dayId;
+  let key = base;
+  for (let suffix = 2; data.sessions[key]; suffix++) key = base + ':' + suffix;
+  return key;
+}
+
+function viewDate() {
+  return session(DAYS[ui.day].id)?.date ?? keyDate(today);
+}
+
+function selectNextWorkout() {
+  ui.day = nextStep() % DAYS.length;
+  ui.sessionKey = null;
+}
 function humanDate(d,short=false){return d.toLocaleDateString('it-IT',short?{day:'2-digit',month:'short'}:{weekday:'long',day:'numeric',month:'long',year:'numeric'})}
-function fullMonth(d){return d.toLocaleDateString('it-IT',{month:'short'})}
-function session(dayId,dayIndex=ui.day,shift=ui.shift,create=false){const k=viewKey(dayIndex,shift);if(!data.sessions[k]&&create){data.sessions[k]={date:k,dayId,records:{},activities:{},completedAt:null};}return data.sessions[k]||null}
+function session(dayId, create = false) {
+  const key = ui.sessionKey ?? currentSessionKey(dayId);
+  if (!data.sessions[key] && create) {
+    const step = nextStep();
+    const rotation = DAYS[step % DAYS.length].id === dayId
+      ? {rotationId: rotationId(), rotationStep: step}
+      : {};
+    data.sessions[key] = {date: keyDate(today), dayId, records: {}, activities: {}, completedAt: null, ...rotation};
+  }
+  return data.sessions[key] ?? null;
+}
 function planItems(day){return [...day.items,...data.customExercises.filter(x=>x.dayId===day.id)].map(item=>({...item,...(data.overrides[day.id+':'+item.id]||{}),key:day.id+':'+item.id})).filter(x=>x.enabled!==false)}
 function uniqueExercises(){const set=new Set();const items=[];for(const day of DAYS){for(const ex of planItems(day)){if(!set.has(ex.id)){items.push(ex);set.add(ex.id)}}}return items}
 function getHistory(dayId,exId,before=null){return Object.values(data.sessions).filter(s=>s.dayId===dayId&&(!before||s.date<before)&&s.records&&s.records[exId]).sort((a,b)=>b.date.localeCompare(a.date)).map(s=>({date:s.date,sets:s.records[exId],session:s}));}
 function loggedSets(s,exId){return (s?.records?.[exId]||[]).filter(x=>x&&x.done)}
 function previousWeight(dayId,exId,before){for(const h of getHistory(dayId,exId,before)){const weights=h.sets.filter(x=>x&&x.done&&x.weight!==''&&Number.isFinite(num(x.weight))).map(x=>num(x.weight));if(weights.length)return weights[0];}return null}
-function exerciseSet(day,ex,ix,create=false){const s=session(day.id,ui.day,ui.shift,create);const previous=previousWeight(day.id,ex.id,viewKey());if(!s)return {weight:ex.kind==='bodyweight'?0:ex.kind==='assist'?'':ex.kind==='seconds'?'':(previous??''),reps:'',rir:'',done:false};
+function exerciseSet(day,ex,ix,create=false){const s=session(day.id,create);const previous=previousWeight(day.id,ex.id,viewDate());if(!s)return {weight:ex.kind==='bodyweight'?0:ex.kind==='assist'?'':ex.kind==='seconds'?'':(previous??''),reps:'',rir:'',done:false};
  if(!s.records[ex.id]&&create)s.records[ex.id]=[];
  const arr=s.records[ex.id]||[];
  if(!arr[ix]&&create)arr[ix]={weight:ex.kind==='bodyweight'?0:ex.kind==='assist'?'':ex.kind==='seconds'?'':(previous??''),reps:'',rir:'',done:false};
  return arr[ix]||{weight:ex.kind==='bodyweight'?0:ex.kind==='assist'?'':ex.kind==='seconds'?'':(previous??''),reps:'',rir:'',done:false};
 }
-function adviceFor(day,ex){const hist=getHistory(day.id,ex.id).filter(h=>h.date<=viewKey()&&h.sets.some(x=>x&&x.done));const last=hist[0];if(!last||!last.sets.length||!last.sets.some(x=>x&&x.done))return {state:'neutral',text:'Prima seduta: scegli un carico che lasci 2-3 ripetizioni in riserva.'};
+function adviceFor(day,ex){const hist=getHistory(day.id,ex.id).filter(h=>h.date<=viewDate()&&h.sets.some(x=>x&&x.done));const last=hist[0];if(!last||!last.sets.length||!last.sets.some(x=>x&&x.done))return {state:'neutral',text:'Prima seduta: scegli un carico che lasci 2-3 ripetizioni in riserva.'};
  const done=last.sets.filter(x=>x&&x.done);const goal=ex.sets;
  const weights=done.map(x=>num(x.weight)).filter(x=>Number.isFinite(x));
  const load=weights.length?weights[0]:NaN;
@@ -106,10 +148,9 @@ function head() {
 }
 
 function renderHome() {
-  const { day, shift } = nextWorkout(today);
-  const workout = DAYS[day];
+  const workout = DAYS[nextStep() % DAYS.length];
   const shortcuts = [
-    ['week', 'calendar', 'Settimana', 'Calendario delle sedute'],
+    ['week', 'calendar', 'Il tuo ciclo', 'Ordine delle sedute e storico'],
     ['progress', 'chart', 'Progressi', 'Grafici e storico'],
     ['library', 'book', 'Esercizi', 'Foto e tecnica'],
     ['data', 'settings', 'I tuoi dati', 'Personalizzazione e backup'],
@@ -118,7 +159,7 @@ function renderHome() {
     <section class="home-workout" aria-labelledby="home-heading">
       <div class="home-plate" aria-hidden="true"></div>
       <div class="home-workout-copy">
-        <p class="home-kicker">${shift ? 'Prossima seduta' : 'Allenamento di oggi'}</p>
+        <p class="home-kicker">Prossima seduta</p>
         <h1 id="home-heading">${E(workout.title)}</h1>
         <p class="home-workout-meta"><span>${E(workout.name)}</span><span>${icon('clock', 'icon-sm')}${E(workout.duration)}</span></p>
         <button class="btn primary home-start" data-action="today-workout">Apri scheda ${icon('arrow', 'icon-sm')}</button>
@@ -138,13 +179,25 @@ function renderHome() {
   </div>`;
 }
 
-function totalCompleted(start=null){return Object.values(data.sessions).filter(s=>s.completedAt&&(!start||s.date>=start)).length}
-function sessionCountWeek(shift=ui.shift){const mon=keyDate(monday(shift)),end=new Date(monday(shift));end.setDate(end.getDate()+6);const until=keyDate(end);return Object.values(data.sessions).filter(s=>s.completedAt&&s.date>=mon&&s.date<=until).length}
-function weekStrip(){const start=monday(ui.shift),end=new Date(start);end.setDate(start.getDate()+6);return `<div class="date-switch"><div><div class="eyebrow" style="margin-bottom:2px">SETTIMANA</div><div class="dates">${E(humanDate(start,true))} - ${E(humanDate(end,true))}</div></div><div class="week-arrows"><button class="btn btn-sm btn-outline" data-action="shift" data-dir="-1" title="Settimana precedente">${icon('left')}</button><button class="btn btn-sm btn-outline" data-action="shift" data-dir="1" title="Settimana successiva">${icon('arrow')}</button></div></div><div class="weekbar">${DAYS.map((d,i)=>{const s=session(d.id,i);return `<button class="daychip ${i===ui.day?'active':''} ${s?.completedAt?'logged':''}" data-action="day" data-day="${i}"><span class="dlabel">${d.short}</span><span class="date">${dayDate(i).getDate()}</span><span class="dot"></span></button>`}).join('')}</div>`}
+function cycleStrip() {
+  const next = nextStep() % DAYS.length;
+  return `<div class="weekbar">${DAYS.map((day, i) =>
+    `<button class="daychip${i === ui.day && !ui.sessionKey ? ' active' : ''}${i < next ? ' logged' : ''}" data-action="day" data-day="${i}" aria-label="${E(day.name + ' · ' + day.title)}" ${i === ui.day && !ui.sessionKey ? 'aria-pressed="true"' : 'aria-pressed="false"'}><span class="dlabel">SEDUTA</span><span class="date">${i + 1}</span><span class="dot"></span></button>`
+  ).join('')}</div>`;
+}
 function simpleStat(value,label){return `<div class="stat"><div class="value">${value}</div><div class="label">${label}</div></div>`}
 function sectionTitle(title,extra=''){return `<div class="section-title"><h2>${title}</h2>${extra}</div>`}
-function renderTrain(){const day=DAYS[ui.day],s=session(day.id),p=progressOf(day,s);return `<div class="page"><div class="week-summary"><h1>Allenamento</h1><span>${sessionCountWeek()}/5 sedute</span></div>${weekStrip()}<div class="rest-note">Sabato e domenica: riposo</div><div id="workout-start">${renderDay(day,s,p)}</div></div>`}
-function renderDay(day,s,p){const date=dayDate(ui.day);return `<div class="day-hero ${day.id}"><div class="category">${E(day.name)} · ${E(humanDate(date,true))}</div><h1>${E(day.title)}</h1><div class="day-meta"><span>${E(day.duration)}</span><span>${p.completed}/${p.target} completati</span></div><div class="meter"><div style="width:${Math.min(100,p.pct)}%"></div></div></div><details class="warmup compact"><summary>Riscaldamento</summary><p>${E(day.warmup)}</p></details>${sectionTitle('Esercizi',`<span class="count">${planItems(day).length}</span>`)}<div class="exercise-grid">${planItems(day).map(ex=>renderExercise(day,ex,s)).join('')}</div>${day.activities.length?sectionTitle('Cardio e boxe'):''}<div class="exercise-grid">${day.activities.map(a=>renderActivity(day,a,s)).join('')}</div><details class="card cardpad session-notes" style="margin-top:16px" ${s?.notes||s?.fatigue?'open':''}><summary>Fatica e note (facoltativo)</summary><div class="formgroup"><label for="session-fatigue">Fatica da 1 a 10</label><input id="session-fatigue" class="search" type="number" inputmode="numeric" min="1" max="10" placeholder="Da 1 a 10" value="${E(s?.fatigue||'')}" data-input="session" data-field="fatigue"></div><div class="formgroup"><label for="session-note">Note</label><textarea id="session-note" class="search" maxlength="500" placeholder="Come è andata?" data-input="session" data-field="notes">${E(s?.notes||'')}</textarea></div></details><div class="completion"><button class="btn ${s?.completedAt?'soft':'primary'}" data-action="complete-session">${icon('check')} ${s?.completedAt?'Seduta salvata · riapri':'Termina allenamento'}</button><p>Le serie sono salvate automaticamente.</p></div></div>`}
+function renderTrain() {
+  const day = DAYS[ui.day], s = session(day.id);
+  const next = nextStep() % DAYS.length;
+  return `<div class="page">
+    <div class="week-summary"><h1>Allenamento</h1><span>${next}/${DAYS.length} nel ciclo</span></div>
+    ${cycleStrip()}
+    ${ui.sessionKey || ui.day !== next ? '<button class="btn btn-sm btn-outline" data-action="today-workout">Vai alla prossima seduta</button>' : ''}
+    <div id="workout-start">${renderDay(day, s, progressOf(day, s))}</div>
+  </div>`;
+}
+function renderDay(day,s,p){const date=new Date(viewDate()+'T12:00:00');return `<div class="day-hero ${day.id}"><div class="category">${E(day.name)} · ${E(humanDate(date,true))}</div><h1>${E(day.title)}</h1><div class="day-meta"><span>${E(day.duration)}</span><span>${p.completed}/${p.target} completati</span></div><div class="meter"><div style="width:${Math.min(100,p.pct)}%"></div></div></div><details class="warmup compact"><summary>Riscaldamento</summary><p>${E(day.warmup)}</p></details>${sectionTitle('Esercizi',`<span class="count">${planItems(day).length}</span>`)}<div class="exercise-grid">${planItems(day).map(ex=>renderExercise(day,ex,s)).join('')}</div>${day.activities.length?sectionTitle('Cardio e boxe'):''}<div class="exercise-grid">${day.activities.map(a=>renderActivity(day,a,s)).join('')}</div><details class="card cardpad session-notes" style="margin-top:16px" ${s?.notes||s?.fatigue?'open':''}><summary>Fatica e note (facoltativo)</summary><div class="formgroup"><label for="session-fatigue">Fatica da 1 a 10</label><input id="session-fatigue" class="search" type="number" inputmode="numeric" min="1" max="10" placeholder="Da 1 a 10" value="${E(s?.fatigue||'')}" data-input="session" data-field="fatigue"></div><div class="formgroup"><label for="session-note">Note</label><textarea id="session-note" class="search" maxlength="500" placeholder="Come è andata?" data-input="session" data-field="notes">${E(s?.notes||'')}</textarea></div></details><div class="completion"><button class="btn ${s?.completedAt?'soft':'primary'}" data-action="complete-session">${icon('check')} ${s?.completedAt?'Seduta salvata · riapri':'Termina allenamento'}</button><p>Le serie sono salvate automaticamente.</p></div></div>`}
 function renderExercise(day,ex,s){const completed=loggedSets(s,ex.id).length;
  const advise=adviceFor(day,ex);const isTime=ex.kind==='seconds';const isBW=ex.kind==='bodyweight';const repsTitle=isTime?'Secondi':'Rip.';
  const weightTitle=isTime?'--':ex.kind==='assist'?'Assist. kg':isBW?'kg extra':'Kg';
@@ -153,9 +206,32 @@ function renderExercise(day,ex,s){const completed=loggedSets(s,ex.id).length;
  const expanded=ui.expanded[day.id+':'+ex.id]??false;
  return `<article class="card exercise ${completed>=ex.sets?'done':''}" id="exercise-${E(day.id)}-${E(ex.id)}"><button class="exercise-summary" data-action="expand-ex" data-ex="${E(ex.id)}" aria-expanded="${expanded}"><div class="eximg">${imageThumb(ex)}</div><div class="exinfo"><h3>${E(ex.name)}</h3><div class="exsmall">${formatTarget} · ${Math.round(ex.rest)} s recupero</div></div><span class="set-count ${completed>=ex.sets?'finished':''}">${completed>=ex.sets?icon('check','icon-sm'):Math.min(completed,ex.sets)+'/'+ex.sets}</span><span class="expand-symbol">${expanded?'−':'+'}</span></button>${expanded?`<div class="exercise-details"><div class="exactions"><button class="btn btn-sm btn-outline" data-action="open-tech" data-ex="${E(ex.id)}" data-dayid="${E(day.id)}">${icon('photo','icon-sm')} Foto e tecnica</button><button class="btn btn-sm btn-outline" data-action="open-edit" data-ex="${E(ex.id)}" data-dayid="${E(day.id)}" title="Modifica esercizio">${icon('edit','icon-sm')} Modifica</button></div><div class="sethead"><span>#</span><span class="labelcenter">${E(weightTitle)}</span><span class="labelcenter">${repsTitle}</span><span class="labelcenter">RIR</span><span></span></div>${setrows}<div class="unitnote">${ex.kind==='assist'?'0 kg = senza assistenza.':isBW?'0 kg = corpo libero.':isTime?'Registra i secondi tenuti.':'Manubri: kg di un manubrio.'} RIR = ripetizioni ancora possibili.</div><div class="exfooter"><span class="hint ${advise.state==='warn'?'caution':''}">${E(advise.text)}</span><button class="timerbtn" data-action="timer" data-seconds="${ex.rest}">${icon('clock','icon-sm')} Timer ${ex.rest}s</button></div></div>`:''}</article>`}
 function renderActivity(day,a,s){const x=s?.activities?.[a.id]||{};const run=a.kind==='run';const val=(k,def='')=>x[k]??def;return `<article class="card activity ${day.id}"><div class="acticon">${icon(run?'run':'boxing','icon-lg')}</div><div class="actbody"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><strong>${E(a.name)}</strong><span class="pill">${E(a.target)}</span></div><p>${E(a.desc)}</p><div class="actfields"><label><span class="fieldlabel">${run?'Minuti':'Round'}</span><input class="field" type="number" inputmode="decimal" min="0" value="${E(val(run?'minutes':'rounds',run?a.minutes:a.rounds))}" data-input="activity" data-id="${E(a.id)}" data-field="${run?'minutes':'rounds'}"></label><label><span class="fieldlabel">${run?'Km percorsi':'Min./round'}</span><input class="field" type="number" inputmode="decimal" step="0.1" min="0" value="${E(val(run?'distance':'roundMinutes',run?'':a.roundMinutes))}" data-input="activity" data-id="${E(a.id)}" data-field="${run?'distance':'roundMinutes'}" placeholder="${run?'km':'min'}"></label><label><span class="fieldlabel">Fat. 1-10</span><input class="field" type="number" inputmode="numeric" min="1" max="10" value="${E(val('rpe'))}" data-input="activity" data-id="${E(a.id)}" data-field="rpe" placeholder="--"></label></div><div class="actfooter"><small class="muted">${run?'Ritmo facile':'Boxe tecnica'}</small><button class="toggle-btn ${x.done?'is-done':''}" data-action="toggle-act" data-id="${E(a.id)}">${icon('check','icon-sm')} ${x.done?'Fatto':'Segna fatto'}</button></div></div></article>`}
-function renderWeek(){const start=monday(ui.shift);let count=sessionCountWeek();return `<div class="page"><div class="eyebrow">PANORAMICA</div><h1>La tua settimana</h1><p class="muted text-sm" style="margin-top:9px">5 allenamenti dal lunedì al venerdì. Sabato e domenica dedicati al recupero.</p><div class="stats">${simpleStat(count+'/5','Sedute concluse')}${simpleStat(DAYS.reduce((n,d)=>n+planItems(d).length,0),'Esercizi programmati')}${simpleStat('2 + 2','Corsa + boxe')}</div>${sectionTitle('Calendario')}${weekStrip()}<div style="margin-top:16px">${DAYS.map((day,i)=>{const s=session(day.id,i),p=progressOf(day,s);return `<button class="overviewday ${day.id}" data-action="open-day" data-day="${i}"><span class="daymonogram">${day.short}</span><span class="details"><strong>${E(day.title)}</strong><span>${E(day.focus)} / ${E(day.duration)}</span><div class="meter" style="margin-top:8px;height:4px"><div style="width:${p.pct}%"></div></div></span><span class="checkbadge">${s?.completedAt?icon('check'):icon('arrow')}</span></button>`}).join('')}</div><div class="card cardpad" style="margin-top:12px"><h3>Weekend: recupero</h3><p class="muted text-xs" style="margin-top:6px">Sabato e domenica riposo. Camminate e mobilità leggera sono facoltative.</p></div><div class="card cardpad" style="margin-top:12px"><h3>Progressione del programma</h3><div class="timeline" style="margin-top:9px"><div class="timelineitem"><strong>Sett. 1-2</strong><span>2-3 RIR, conosci i carichi</span></div><div class="timelineitem"><strong>Sett. 3-6</strong><span>Aumenta ripetizioni e poi peso</span></div><div class="timelineitem"><strong>Sett. 7</strong><span>Scarico: circa metà delle serie</span></div><div class="timelineitem"><strong>Sett. 8</strong><span>Controlla progressi e 5 km</span></div></div></div></div>`}
+function renderWeek() {
+  const next = nextStep() % DAYS.length;
+  const history = Object.entries(data.sessions).reverse().sort(([, a], [, b]) => b.date.localeCompare(a.date));
+  return `<div class="page">
+    <h1>Il tuo ciclo</h1>
+    <p class="muted text-sm" style="margin:9px 0 16px">Se salti un giorno, riprendi dalla stessa seduta quando torni.</p>
+    ${DAYS.map((day, i) => `<button class="overviewday ${day.id}" data-action="day" data-day="${i}">
+      <span class="daymonogram">${i + 1}</span>
+      <span class="details"><strong>${E(day.title)}</strong><span>${i === next ? 'Prossima seduta' : E(day.focus)}</span></span>
+      <span class="checkbadge">${i < next ? icon('check') : ''}</span>
+    </button>`).join('')}
+    <button class="btn btn-outline btnfull" data-action="restart-cycle">Riparti dalla seduta 1</button>
+    <details class="card cardpad" style="margin-top:12px"><summary>Storico sedute</summary>
+      <div style="margin-top:12px">${history.map(([key, s]) => {
+        const day = DAYS.find(item => item.id === s.dayId);
+        if (!day) return '';
+        return `<button class="overviewday ${day.id}" data-action="open-session" data-key="${E(key)}">
+          <span class="details"><strong>${E(day.title)}</strong><span>${E(humanDate(new Date(s.date + 'T12:00:00'), true))} · ${s.completedAt ? 'Completata' : 'Da terminare'}</span></span>
+        </button>`;
+      }).join('') || '<p class="muted text-sm">Nessuna seduta registrata.</p>'}</div>
+    </details>
+    <div class="card cardpad" style="margin-top:12px"><h3>Progressione del programma</h3><div class="timeline" style="margin-top:9px"><div class="timelineitem"><strong>Cicli 1-2</strong><span>2-3 RIR, conosci i carichi</span></div><div class="timelineitem"><strong>Cicli 3-6</strong><span>Aumenta ripetizioni e poi peso</span></div><div class="timelineitem"><strong>Ciclo 7</strong><span>Scarico: circa metà delle serie</span></div><div class="timelineitem"><strong>Ciclo 8</strong><span>Controlla progressi e 5 km</span></div></div></div>
+  </div>`;
+}
 function completedSessions(){return Object.values(data.sessions).filter(s=>s.completedAt).sort((a,b)=>b.date.localeCompare(a.date));}
-function weekBars(){const entries=Array.from({length:8},(_,i)=>{const d=monday(i-7),start=keyDate(d);d.setDate(d.getDate()+6);const end=keyDate(d);return {label:'S'+(i+1),count:Object.values(data.sessions).filter(s=>s.completedAt&&s.date>=start&&s.date<=end).length}});return `<div class="card cardpad"><h3>Allenamenti - ultime 8 settimane</h3><p class="muted text-xs" style="margin:3px 0 12px">Ogni barra rappresenta una settimana.</p>${entries.map(r=>`<div class="barline"><div class="barlabel">${r.label}</div><div class="bar"><b style="width:${r.count*20}%"></b></div><div class="barval">${r.count}/5</div></div>`).join('')}</div>`}
+function weekBars(){const entries=Array.from({length:8},(_,i)=>{const d=monday(i-7),start=keyDate(d);d.setDate(d.getDate()+6);const end=keyDate(d);return {label:'S'+(i+1),count:Object.values(data.sessions).filter(s=>s.completedAt&&s.date>=start&&s.date<=end).length}});return `<div class="card cardpad"><h3>Allenamenti - ultime 8 settimane</h3><p class="muted text-xs" style="margin:3px 0 12px">Ogni barra rappresenta una settimana.</p>${entries.map(r=>`<div class="barline"><div class="barlabel">${r.label}</div><div class="bar"><b style="width:${Math.min(100,r.count*20)}%"></b></div><div class="barval">${r.count}</div></div>`).join('')}</div>`}
 function chartEntries(dayId,exId){return getHistory(dayId,exId).slice().reverse().map(r=>{const sets=r.sets.filter(s=>s&&s.done);const weights=sets.map(s=>num(s.weight)).filter(Number.isFinite);return {date:r.date,load:weights.length?Math.max(...weights):NaN,reps:sets.map(s=>s.reps).join('/'),sets:sets.length}}).filter(x=>Number.isFinite(x.load))}
 function drawChart(entries){if(!entries.length)return `<div class="empty">Nessun peso registrato per questo esercizio. Spunta qualche serie per iniziare il grafico.</div>`;
  const recent=entries.slice(-10),vals=recent.map(x=>x.load);let lo=Math.min(...vals),hi=Math.max(...vals);if(lo===hi){lo=Math.max(0,lo-2.5);hi+=2.5};let diff=hi-lo;lo=Math.max(0,lo-diff*.17);hi+=diff*.17;diff=hi-lo;
@@ -176,7 +252,7 @@ function renderData(){const hidden=DAYS.flatMap(d=>[...d.items,...data.customExe
 function lookupExercise(dayId,exId){const day=DAYS.find(d=>d.id===dayId);const ex=day&&planItems(day).find(e=>e.id===exId);return {day,ex}}
 function modalTech(day,ex){const makePhoto=i=>`<div class="photo">${ex.photo?`<img src="${E(imageUrl(ex,i))}" alt="${E(ex.name)} posizione ${i+1}">`:`<div class="photo-fallback">Foto non disponibile</div>`}<div class="photo-label">POSIZIONE ${i+1}</div></div>`;return `<div class="modalback" data-action="backdrop"><div class="modal" role="dialog" aria-modal="true" aria-label="Tecnica ${E(ex.name)}"><div class="modal-top"><div><div class="eyebrow">TECNICA / ${E(ex.group)}</div><h2>${E(ex.name)}</h2><p class="muted text-xs" style="margin-top:5px">${ex.sets} x ${ex.low}-${ex.high} / Recupero ${ex.rest}s</p></div><button data-action="close-modal" aria-label="Chiudi">${icon('close')}</button></div><div class="photos">${makePhoto(0)}${makePhoto(1)}</div><h3>Come eseguirlo</h3><ol class="techlist">${ex.tips.map(t=>`<li>${E(t)}</li>`).join('')}</ol>${ex.alt?`<div class="techwarning">${icon('info','icon-sm')} ${E(ex.alt)}</div>`:''}<div class="warmup" style="margin:13px 0">${icon('clock')}<span class="text-xs">Recupero: <strong>${ex.rest} secondi</strong>. Interrompi la serie se perdi la tecnica.</span></div><button class="btn primary btnfull" data-action="open-edit" data-dayid="${E(day.id)}" data-ex="${E(ex.id)}">${icon('edit')} Cambia serie, range o recupero</button><p class="attribution">Foto da free-exercise-db / Unlicense. Riferimenti visivi, non sostituiscono la correzione tecnica di un istruttore.</p></div></div>`}
 function modalEdit(day,ex){return `<div class="modalback" data-action="backdrop"><div class="modal" role="dialog" aria-modal="true" aria-label="Modifica ${E(ex.name)}"><div class="modal-top"><div><div class="eyebrow">PERSONALIZZA L'ALLENAMENTO</div><h2>${E(ex.name)}</h2><p class="muted text-xs" style="margin-top:5px">Modifica solo se necessario, senza sacrificare il recupero.</p></div><button data-action="close-modal" aria-label="Chiudi">${icon('close')}</button></div><div class="formgroup"><label for="edit-sets">Serie</label><input id="edit-sets" class="search" type="number" min="1" max="8" value="${ex.sets}"></div><div class="two-col"><div class="formgroup"><label for="edit-low">Ripetizioni minime</label><input id="edit-low" class="search" type="number" min="1" max="100" value="${ex.low}"></div><div class="formgroup"><label for="edit-high">Ripetizioni massime</label><input id="edit-high" class="search" type="number" min="1" max="100" value="${ex.high}"></div></div><div class="two-col"><div class="formgroup"><label for="edit-rest">Recupero in secondi</label><input id="edit-rest" class="search" type="number" min="30" max="600" step="15" value="${ex.rest}"></div><div class="formgroup"><label for="edit-inc">Incremento carico (kg)</label><input id="edit-inc" class="search" type="number" min="0" max="20" step="0.5" value="${ex.inc}"></div></div><div class="formgroup"><label style="display:flex;align-items:center;gap:10px"><input id="edit-enabled" type="checkbox" checked style="width:18px;height:18px"> Esercizio attivo nella scheda</label></div><button class="btn primary btnfull" data-action="save-edit" data-dayid="${E(day.id)}" data-ex="${E(ex.id)}">${icon('check')} Salva modifiche</button><p class="helptext">I cambiamenti si applicano alle sedute successive e non cancellano lo storico.</p></div></div>`}
-function modalCustom(){return `<div class="modalback" data-action="backdrop"><div class="modal" role="dialog" aria-modal="true" aria-label="Aggiungi esercizio"><div class="modal-top"><div><div class="eyebrow">ESERCIZIO PERSONALE</div><h2>Aggiungi esercizio</h2></div><button data-action="close-modal" aria-label="Chiudi">${icon('close')}</button></div><div class="formgroup"><label for="custom-name">Nome esercizio</label><input id="custom-name" class="search" maxlength="80" placeholder="Es. Farmer walk"></div><div class="formgroup"><label for="custom-day">Giorno</label><select id="custom-day" class="search">${DAYS.map(d=>`<option value="${d.id}">${d.name} - ${d.title}</option>`).join('')}</select></div><div class="two-col"><div class="formgroup"><label for="custom-sets">Serie</label><input id="custom-sets" class="search" type="number" min="1" max="8" value="3"></div><div class="formgroup"><label for="custom-rest">Recupero (s)</label><input id="custom-rest" class="search" type="number" min="30" max="600" value="90"></div></div><div class="two-col"><div class="formgroup"><label for="custom-low">Min rep</label><input id="custom-low" class="search" type="number" min="1" max="100" value="8"></div><div class="formgroup"><label for="custom-high">Max rep</label><input id="custom-high" class="search" type="number" min="1" max="100" value="12"></div></div><button class="btn primary btnfull" data-action="save-custom">${icon('plus')} Aggiungi alla scheda</button></div></div>`}
+function modalCustom(){return `<div class="modalback" data-action="backdrop"><div class="modal" role="dialog" aria-modal="true" aria-label="Aggiungi esercizio"><div class="modal-top"><div><div class="eyebrow">ESERCIZIO PERSONALE</div><h2>Aggiungi esercizio</h2></div><button data-action="close-modal" aria-label="Chiudi">${icon('close')}</button></div><div class="formgroup"><label for="custom-name">Nome esercizio</label><input id="custom-name" class="search" maxlength="80" placeholder="Es. Farmer walk"></div><div class="formgroup"><label for="custom-day">Seduta</label><select id="custom-day" class="search">${DAYS.map(d=>`<option value="${d.id}">${d.name} - ${d.title}</option>`).join('')}</select></div><div class="two-col"><div class="formgroup"><label for="custom-sets">Serie</label><input id="custom-sets" class="search" type="number" min="1" max="8" value="3"></div><div class="formgroup"><label for="custom-rest">Recupero (s)</label><input id="custom-rest" class="search" type="number" min="30" max="600" value="90"></div></div><div class="two-col"><div class="formgroup"><label for="custom-low">Min rep</label><input id="custom-low" class="search" type="number" min="1" max="100" value="8"></div><div class="formgroup"><label for="custom-high">Max rep</label><input id="custom-high" class="search" type="number" min="1" max="100" value="12"></div></div><button class="btn primary btnfull" data-action="save-custom">${icon('plus')} Aggiungi alla scheda</button></div></div>`}
 function showModal(){if(!ui.modal){modalRoot.innerHTML='';document.body.style.overflow='';return}let html='';if(ui.modal.mode==='custom')html=modalCustom();else{const {day,ex}=lookupExercise(ui.modal.dayId,ui.modal.exId);if(!ex){ui.modal=null;return showModal()}html=ui.modal.mode==='edit'?modalEdit(day,ex):modalTech(day,ex)}modalRoot.innerHTML=html;document.body.style.overflow='hidden';}
 function render(){let output;switch(ui.tab){case 'home':output=renderHome();break;case 'week':output=renderWeek();break;case 'progress':output=renderProgress();break;case 'library':output=renderLibrary();break;case 'data':output=renderData();break;default:output=renderTrain()};root.innerHTML=head()+`<main id="main-content" tabindex="-1">${output}</main>`+nav();showModal();}
 function updateWithoutJump(){const oldY=window.scrollY;render();requestAnimationFrame(()=>window.scrollTo({top:oldY,behavior:'instant'}));}
@@ -196,8 +272,42 @@ function showTimer(){const pill=document.getElementById('timer-pill');const rema
 function startTimer(seconds){timerEnd=Date.now()+seconds*1000;clearInterval(timerHandle);timerHandle=setInterval(showTimer,500);showTimer();toast('Recupero avviato: '+seconds+' secondi')}
 function toggleSet(exId,ix){const day=DAYS[ui.day];const ex=planItems(day).find(x=>x.id===exId);if(!ex)return;const row=exerciseSet(day,ex,ix,true);if(!row.done){if(!(num(row.reps)>0)){toast('Inserisci prima ripetizioni o secondi');return}if(ex.kind!=='seconds'&&ex.kind!=='reps'&&ex.kind!=='bodyweight'&&!Number.isFinite(num(row.weight))){toast('Inserisci il peso o i kg di assistenza');return}}
  row.done=!row.done;save();updateWithoutJump();if(row.done)toast('Serie '+(ix+1)+' registrata')}
-function toggleActivity(id){const day=DAYS[ui.day],a=day.activities.find(x=>x.id===id);if(!a)return;const s=session(day.id,ui.day,ui.shift,true);if(!s.activities[id])s.activities[id]={done:false,...(a.kind==='run'?{minutes:a.minutes,distance:'',rpe:''}:{rounds:a.rounds,roundMinutes:a.roundMinutes,rpe:''})};s.activities[id].done=!s.activities[id].done;save();updateWithoutJump();toast(s.activities[id].done?'Attività registrata':'Attività riaperta')}
-function closeSession(){const day=DAYS[ui.day],s=session(day.id,ui.day,ui.shift,true);if(s.completedAt){s.completedAt=null;save();updateWithoutJump();toast('Seduta riaperta');return}const p=progressOf(day,s);if(p.completed<p.target&&!confirm('Hai spuntato '+p.completed+' di '+p.target+' elementi. Vuoi chiudere comunque?'))return;s.completedAt=new Date().toISOString();save();updateWithoutJump();toast('Allenamento completato e salvato')}
+function toggleActivity(id){const day=DAYS[ui.day],a=day.activities.find(x=>x.id===id);if(!a)return;const s=session(day.id,true);if(!s.activities[id])s.activities[id]={done:false,...(a.kind==='run'?{minutes:a.minutes,distance:'',rpe:''}:{rounds:a.rounds,roundMinutes:a.roundMinutes,rpe:''})};s.activities[id].done=!s.activities[id].done;save();updateWithoutJump();toast(s.activities[id].done?'Attività registrata':'Attività riaperta')}
+function closeSession() {
+  const day = DAYS[ui.day];
+  const existing = session(day.id);
+  if (existing?.completedAt) {
+    existing.completedAt = null;
+    save();
+    updateWithoutJump();
+    toast('Seduta riaperta');
+    return;
+  }
+
+  const p = progressOf(day, existing);
+  if (p.completed < p.target && !confirm('Hai spuntato ' + p.completed + ' di ' + p.target + ' elementi. Vuoi chiudere comunque?')) return;
+
+  const step = nextStep();
+  const key = ui.sessionKey ?? currentSessionKey(day.id);
+  const s = session(day.id, true);
+  const isNext = ui.day === step % DAYS.length;
+  if (isNext && (!ui.sessionKey || (s.rotationId === rotationId() && s.rotationStep === step))) {
+    s.rotationId = rotationId();
+    s.rotationStep = step;
+  }
+  s.completedAt = new Date().toISOString();
+  save();
+
+  if (nextStep() > step) {
+    selectNextWorkout();
+    openTab('train');
+    toast('Seduta salvata. Prossima: ' + DAYS[ui.day].title);
+  } else {
+    ui.sessionKey = key;
+    updateWithoutJump();
+    toast('Allenamento completato e salvato');
+  }
+}
 function openTab(tab) {
   ui.tab = tab;
   ui.modal = null;
@@ -208,11 +318,25 @@ function openTab(tab) {
 
 function handleClick(ev){const b=ev.target.closest('[data-action]');if(!b)return;const action=b.dataset.action;
  if(action==='backdrop'){if(ev.target===b){ui.modal=null;showModal()}return}
- if(action==='tab'){openTab(b.dataset.tab);return}
- if(action==='today-workout'){Object.assign(ui,nextWorkout(today));openTab('train');return}
- if(action==='day'||action==='open-day'){ui.day=minmax(Number(b.dataset.day),0,4);if(action==='open-day')ui.tab='train';window.scrollTo(0,0);render();return}
- if(action==='shift'){ui.shift=minmax(ui.shift+Number(b.dataset.dir),-100,100);render();return}
- if(action==='scroll-workout'){document.getElementById('workout-start')?.scrollIntoView({behavior:'smooth'});return}
+ if(action==='tab'){
+  if(b.dataset.tab==='train')selectNextWorkout();
+  openTab(b.dataset.tab);return;
+ }
+ if(action==='today-workout'){selectNextWorkout();openTab('train');return}
+ if(action==='day'){ui.day=Number(b.dataset.day);ui.sessionKey=null;openTab('train');return}
+ if(action==='open-session'){
+  const key=b.dataset.key,s=data.sessions[key];
+  const day=DAYS.findIndex(d=>d.id===s?.dayId);
+  if(day>=0){ui.day=day;ui.sessionKey=key;openTab('train');}
+  return;
+ }
+ if(action==='restart-cycle'){
+  if(confirm('Ripartire da Schiena e bicipiti? Lo storico e i carichi resteranno salvati.')){
+   data.prefs={...data.prefs,rotationId:rotationId()+1};
+   save();selectNextWorkout();openTab('train');toast('Ciclo ricominciato');
+  }
+  return;
+ }
  if(action==='expand-ex'){const key=DAYS[ui.day].id+':'+b.dataset.ex;ui.expanded[key]=!ui.expanded[key];updateWithoutJump();return}
  if(action==='toggle-set'){toggleSet(b.dataset.ex,Number(b.dataset.index));return}
  if(action==='toggle-act'){toggleActivity(b.dataset.id);return}
@@ -231,7 +355,7 @@ function handleClick(ev){const b=ev.target.closest('[data-action]');if(!b)return
  if(action==='save-custom'){
   const name=(document.getElementById('custom-name')?.value||'').trim();const dayId=document.getElementById('custom-day').value;const sets=num(document.getElementById('custom-sets').value),rest=num(document.getElementById('custom-rest').value),low=num(document.getElementById('custom-low').value),high=num(document.getElementById('custom-high').value);
   if(name.length<2||!DAYS.some(x=>x.id===dayId)||!Number.isFinite(sets)||sets<1||sets>8||!Number.isFinite(rest)||rest<30||!Number.isFinite(low)||low<1||!Number.isFinite(high)||high<low){toast('Completa correttamente tutti i campi');return}
-  const id='custom-'+Date.now().toString(36);data.customExercises.push({id,name,group:'Personalizzato',dayId,sets:Math.round(sets),low:Math.round(low),high:Math.round(high),rest:Math.round(rest),inc:2.5,photo:'',tips:['Esegui con tecnica controllata.','Interrompi prima di perdere la postura.'],kind:'weight'});save();ui.modal=null;ui.tab='train';ui.day=DAYS.findIndex(d=>d.id===dayId);render();toast('Esercizio aggiunto');return;
+  const id='custom-'+Date.now().toString(36);data.customExercises.push({id,name,group:'Personalizzato',dayId,sets:Math.round(sets),low:Math.round(low),high:Math.round(high),rest:Math.round(rest),inc:2.5,photo:'',tips:['Esegui con tecnica controllata.','Interrompi prima di perdere la postura.'],kind:'weight'});save();ui.modal=null;ui.tab='train';ui.day=DAYS.findIndex(d=>d.id===dayId);ui.sessionKey=null;render();toast('Esercizio aggiunto');return;
  }
  if(action==='save-weight'){const val=num(document.getElementById('bodyweight')?.value);if(!Number.isFinite(val)||val<20||val>300){toast('Inserisci un peso valido in kg');return}const date=keyDate(new Date());data.bodyWeights=data.bodyWeights.filter(w=>w.date!==date);data.bodyWeights.push({date,kg:val});save();render();toast('Peso corporeo salvato');return}
  if(action==='export-json'){backupFile();return}
@@ -241,15 +365,15 @@ function handleClick(ev){const b=ev.target.closest('[data-action]');if(!b)return
  if(action==='import-json'){document.querySelector('#import-input')?.click();return}
  if(action==='reenable'){if(data.overrides[b.dataset.key]){data.overrides[b.dataset.key].enabled=true;save();render();toast('Esercizio riattivato')}return}
  if(action==='restore-plan'){if(confirm('Ripristinare serie, ripetizioni e recuperi originali? I progressi resteranno salvati.')){data.overrides={};data.customExercises=[];save();render();toast('Scheda originale ripristinata')}return}
- if(action==='reset-data'){if(confirm('ATTENZIONE: vuoi eliminare tutte le sedute e i pesi? Esporta prima il backup.')){if(confirm('Confermi la cancellazione definitiva dal dispositivo?')){data=emptyData();save();render();toast('Dati cancellati')}}return}
+ if(action==='reset-data'){if(confirm('ATTENZIONE: vuoi eliminare tutte le sedute e i pesi? Esporta prima il backup.')){if(confirm('Confermi la cancellazione definitiva dal dispositivo?')){data=emptyData();selectNextWorkout();save();render();toast('Dati cancellati')}}return}
 }
 function handleInput(ev){const el=ev.target;
  if(el.id==='search-lib'){ui.search=el.value;const results=document.getElementById('library-results');if(results)results.innerHTML=renderLibraryList(ui.search);return}
  if(el.dataset.input==='set'){const day=DAYS[ui.day],ex=planItems(day).find(x=>x.id===el.dataset.ex);if(!ex)return;let value=el.value;if(value!==''&&(!Number.isFinite(num(value))||num(value)<0)){return}if(el.dataset.field==='rir'&&value!==''&&num(value)>10)return;const row=exerciseSet(day,ex,Number(el.dataset.index),true);row[el.dataset.field]=value;save();return}
- if(el.dataset.input==='session'){const day=DAYS[ui.day];const s=session(day.id,ui.day,ui.shift,true);if(el.dataset.field==='fatigue'&&el.value!==''&&(!Number.isFinite(num(el.value))||num(el.value)<1||num(el.value)>10))return;s[el.dataset.field]=el.value;save();return}
- if(el.dataset.input==='activity'){const day=DAYS[ui.day],a=day.activities.find(x=>x.id===el.dataset.id);if(!a)return;const s=session(day.id,ui.day,ui.shift,true);if(!s.activities[a.id])s.activities[a.id]={done:false};const value=el.value;if(value!==''&&(!Number.isFinite(num(value))||num(value)<0))return;s.activities[a.id][el.dataset.field]=value;save();return}
+ if(el.dataset.input==='session'){const day=DAYS[ui.day];const s=session(day.id,true);if(el.dataset.field==='fatigue'&&el.value!==''&&(!Number.isFinite(num(el.value))||num(el.value)<1||num(el.value)>10))return;s[el.dataset.field]=el.value;save();return}
+ if(el.dataset.input==='activity'){const day=DAYS[ui.day],a=day.activities.find(x=>x.id===el.dataset.id);if(!a)return;const s=session(day.id,true);if(!s.activities[a.id])s.activities[a.id]={done:false};const value=el.value;if(value!==''&&(!Number.isFinite(num(value))||num(value)<0))return;s.activities[a.id][el.dataset.field]=value;save();return}
 }
-async function importJson(ev){if(ev.target.id!=='import-input')return;const file=ev.target.files?.[0];if(!file)return;if(file.size>10_000_000){toast('File troppo grande');return}try{const txt=await file.text(),incoming=JSON.parse(txt),raw=incoming.data||incoming;if(!raw.sessions||typeof raw.sessions!=='object'||Array.isArray(raw.sessions))throw Error('Formato non riconosciuto');if(!confirm('Importare il backup e SOSTITUIRE i dati presenti su questo dispositivo?'))return;data={...emptyData(),...raw};if(!Array.isArray(data.customExercises))data.customExercises=[];if(!Array.isArray(data.bodyWeights))data.bodyWeights=[];if(!data.overrides||typeof data.overrides!=='object')data.overrides={};save();render();toast('Backup importato con successo')}catch(err){console.error(err);toast('Backup non valido o illeggibile')}finally{ev.target.value=''}}
+async function importJson(ev){if(ev.target.id!=='import-input')return;const file=ev.target.files?.[0];if(!file)return;if(file.size>10_000_000){toast('File troppo grande');return}try{const txt=await file.text(),incoming=JSON.parse(txt),raw=incoming.data||incoming;if(!raw.sessions||typeof raw.sessions!=='object'||Array.isArray(raw.sessions))throw Error('Formato non riconosciuto');if(!confirm('Importare il backup e SOSTITUIRE i dati presenti su questo dispositivo?'))return;data={...emptyData(),...raw};if(!Array.isArray(data.customExercises))data.customExercises=[];if(!Array.isArray(data.bodyWeights))data.bodyWeights=[];if(!data.overrides||typeof data.overrides!=='object')data.overrides={};selectNextWorkout();save();render();toast('Backup importato con successo')}catch(err){console.error(err);toast('Backup non valido o illeggibile')}finally{ev.target.value=''}}
 function handleChange(ev){if(ev.target.id==='import-input'){importJson(ev);return}if(ev.target.id==='chart-select'){ui.chart=ev.target.value;updateWithoutJump();return}}
 function errorImage(ev){const el=ev.target;if(el.tagName!=='IMG')return;const fallback=document.createElement('div');fallback.className=el.closest('.photo')?'photo-fallback':'phfallback';fallback.innerHTML=el.closest('.photo')?'Foto non disponibile':icon('dumbbell','icon-lg');el.replaceWith(fallback)}
 document.addEventListener('click',handleClick);
@@ -257,8 +381,9 @@ document.addEventListener('input',handleInput);
 document.addEventListener('change',handleChange);
 document.addEventListener('error',errorImage,true);
 document.addEventListener('keydown',ev=>{if(ev.key==='Escape'&&ui.modal){ui.modal=null;showModal()}});
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){const now=new Date();if(keyDate(now)!==keyDate(today)){today=now;Object.assign(ui,nextWorkout(today));render()}}});
-window.addEventListener('storage',ev=>{if(ev.key===STORE){try{data={...emptyData(),...JSON.parse(ev.newValue)};render()}catch(e){}}});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){const now=new Date();if(keyDate(now)!==keyDate(today)){today=now;if(ui.tab==='train'&&!ui.sessionKey)selectNextWorkout();render()}}});
+window.addEventListener('storage',ev=>{if(ev.key===STORE){try{data={...emptyData(),...JSON.parse(ev.newValue)};if(ui.sessionKey&&!data.sessions[ui.sessionKey])selectNextWorkout();render()}catch(e){}}});
 if('serviceWorker'in navigator&&/^https?:$/.test(location.protocol)){window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(e=>console.info('Offline not available',e)))}
+selectNextWorkout();
 render();
 })();
