@@ -6,9 +6,12 @@ const emptyData=()=>({version:1,sessions:{},overrides:{},customExercises:[],body
 let data=emptyData();
 try {const raw=localStorage.getItem(STORE);if(raw){const saved=JSON.parse(raw);if(saved&&saved.sessions&&typeof saved.sessions==='object')data={...emptyData(),...saved};}}catch(e){console.warn('Storage unavailable',e)}
 let today=new Date();
-const weekdayIndex=(today.getDay()+6)%7;
-const currentDay=weekdayIndex>=5?0:weekdayIndex;
-let ui={tab:'train',day:currentDay,shift:weekdayIndex>=5?1:0,modal:null,chart:'thu:bench',search:'',expanded:{}};
+function nextWorkout(date) {
+  const day = (date.getDay() + 6) % 7;
+  return day < DAYS.length ? { day, shift: 0 } : { day: 0, shift: 1 };
+}
+
+let ui={tab:'home',...nextWorkout(today),modal:null,chart:'thu:bench',search:'',expanded:{}};
 let timerEnd=0,timerHandle=0,toastHandle=0;
 const root=document.querySelector('#app');
 const modalRoot=document.querySelector('#modal-root');
@@ -59,6 +62,7 @@ function adviceFor(day,ex){const hist=getHistory(day.id,ex.id).filter(h=>h.date<
 }
 function progressOf(day,s){const items=planItems(day);const target=items.reduce((a,e)=>a+e.sets,0)+day.activities.length;const completed=items.reduce((a,e)=>a+Math.min(e.sets,loggedSets(s,e.id).length),0)+day.activities.filter(a=>s?.activities?.[a.id]?.done).length;return {target,completed,pct:target?Math.round(completed/target*100):0};}
 function icon(name,size=''){const paths={
+ home:'<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z"/>',
  dumbbell:'<path d="m6.5 6.5 11 11M4 8.5 8.5 4M2.5 7 7 2.5M15.5 20 20 15.5M17 21.5l4.5-4.5M8 4l12 12"/>',
  calendar:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/>',
  chart:'<path d="M3 3v18h18"/><path d="m6 16 5-5 4 3 5-7"/>',
@@ -85,8 +89,55 @@ function icon(name,size=''){const paths={
 };return `<svg class="icon ${size}" viewBox="0 0 24 24" aria-hidden="true">${paths[name]||paths.target}</svg>`}
 function imageUrl(ex,ix=0){return ex.photo?photoBase+ex.photo+'/'+ix+'.jpg':''}
 function imageThumb(ex){return ex.photo?`<img loading="lazy" alt="Foto di ${E(ex.name)}" src="${E(imageUrl(ex))}">`:`<div class="phfallback">${icon('dumbbell','icon-lg')}</div>`}
-function nav(){const tabs=[['train','dumbbell','Allenamento'],['progress','chart','Progressi'],['data','settings','Impostazioni']];return `<nav class="bottom-nav" aria-label="Menu principale">${tabs.map(([k,ic,l])=>`<button class="navbtn ${ui.tab===k?'active':''}" data-action="tab" data-tab="${k}">${icon(ic)}<span>${l}</span></button>`).join('')}</nav>`}
-function head(){return `<header class="topbar"><div class="brand"><div class="logo">BG</div><div><div class="brandtitle">Bozzi Gym</div><div class="brandsub">Il tuo allenamento</div></div></div><span class="version">2.0</span></header>`}
+function nav() {
+  const tabs = [
+    ['home', 'home', 'Home'],
+    ['train', 'dumbbell', 'Scheda'],
+    ['progress', 'chart', 'Progressi'],
+    ['data', 'settings', 'Dati'],
+  ];
+  return `<nav class="bottom-nav" aria-label="Menu principale">${tabs.map(([tab, glyph, label]) =>
+    `<button class="navbtn${ui.tab === tab ? ' active' : ''}" data-action="tab" data-tab="${tab}" ${ui.tab === tab ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span></button>`
+  ).join('')}</nav>`;
+}
+
+function head() {
+  return `<header class="topbar"><div class="brand"><div class="logo" aria-hidden="true">BG</div><div class="brandtitle">Bozzi Gym</div></div></header>`;
+}
+
+function renderHome() {
+  const { day, shift } = nextWorkout(today);
+  const workout = DAYS[day];
+  const shortcuts = [
+    ['week', 'calendar', 'Settimana', 'Calendario delle sedute'],
+    ['progress', 'chart', 'Progressi', 'Grafici e storico'],
+    ['library', 'book', 'Esercizi', 'Foto e tecnica'],
+    ['data', 'settings', 'I tuoi dati', 'Personalizzazione e backup'],
+  ];
+  return `<div class="page home">
+    <section class="home-workout" aria-labelledby="home-heading">
+      <div class="home-plate" aria-hidden="true"></div>
+      <div class="home-workout-copy">
+        <p class="home-kicker">${shift ? 'Prossima seduta' : 'Allenamento di oggi'}</p>
+        <h1 id="home-heading">${E(workout.title)}</h1>
+        <p class="home-workout-meta"><span>${E(workout.name)}</span><span>${icon('clock', 'icon-sm')}${E(workout.duration)}</span></p>
+        <button class="btn primary home-start" data-action="today-workout">Apri scheda ${icon('arrow', 'icon-sm')}</button>
+      </div>
+    </section>
+    <section class="home-shortcuts" aria-labelledby="shortcuts-heading">
+      <h2 id="shortcuts-heading">Esplora</h2>
+      <div class="home-grid">
+        ${shortcuts.map(([tab, glyph, label, description]) => `<button class="home-tile" data-action="tab" data-tab="${tab}">
+          <span class="home-tile-icon">${icon(glyph)}</span>
+          ${icon('arrow', 'home-tile-arrow')}
+          <strong>${label}</strong>
+          <span class="home-tile-description">${description}</span>
+        </button>`).join('')}
+      </div>
+    </section>
+  </div>`;
+}
+
 function totalCompleted(start=null){return Object.values(data.sessions).filter(s=>s.completedAt&&(!start||s.date>=start)).length}
 function sessionCountWeek(shift=ui.shift){const mon=keyDate(monday(shift)),end=new Date(monday(shift));end.setDate(end.getDate()+6);const until=keyDate(end);return Object.values(data.sessions).filter(s=>s.completedAt&&s.date>=mon&&s.date<=until).length}
 function weekStrip(){const start=monday(ui.shift),end=new Date(start);end.setDate(start.getDate()+6);return `<div class="date-switch"><div><div class="eyebrow" style="margin-bottom:2px">SETTIMANA</div><div class="dates">${E(humanDate(start,true))} - ${E(humanDate(end,true))}</div></div><div class="week-arrows"><button class="btn btn-sm btn-outline" data-action="shift" data-dir="-1" title="Settimana precedente">${icon('left')}</button><button class="btn btn-sm btn-outline" data-action="shift" data-dir="1" title="Settimana successiva">${icon('arrow')}</button></div></div><div class="weekbar">${DAYS.map((d,i)=>{const s=session(d.id,i);return `<button class="daychip ${i===ui.day?'active':''} ${s?.completedAt?'logged':''}" data-action="day" data-day="${i}"><span class="dlabel">${d.short}</span><span class="date">${dayDate(i).getDate()}</span><span class="dot"></span></button>`}).join('')}</div>`}
@@ -111,8 +162,8 @@ function drawChart(entries){if(!entries.length)return `<div class="empty">Nessun
  const left=36,top=13,W=340,H=158,plotW=288,plotH=115;
  const pt=recent.map((e,i)=>({x:left+(recent.length===1?.5:i/(recent.length-1))*plotW,y:top+(hi-e.load)/diff*plotH,value:e.load,date:e.date}));
  const line=pt.map(p=>p.x.toFixed(1)+','+p.y.toFixed(1)).join(' ');
- const ylabels=[0,.5,1].map(f=>{const val=(hi-f*diff).toFixed(1);const y=top+f*plotH;return `<line x1="${left}" y1="${y}" x2="${left+plotW}" y2="${y}" stroke="#2b3c52" stroke-dasharray="3 5"/><text x="${left-6}" y="${y+4}" font-size="9" text-anchor="end" fill="#859bb2">${val}</text>`}).join('');
- return `<div class="graphbox"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Grafico dei pesi nel tempo">${ylabels}<polyline points="${line}" fill="none" stroke="#70eed2" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>${pt.map(p=>`<circle cx="${p.x}" cy="${p.y}" r="4" fill="#72eed2" stroke="#092827" stroke-width="1.5"/>`).join('')}</svg><div class="legend"><span>${recent[0].date}</span><span>Peso serie, kg</span><span>${recent[recent.length-1].date}</span></div></div>`}
+ const ylabels=[0,.5,1].map(f=>{const val=(hi-f*diff).toFixed(1);const y=top+f*plotH;return `<line x1="${left}" y1="${y}" x2="${left+plotW}" y2="${y}" stroke="#484a50" stroke-dasharray="3 5"/><text x="${left-6}" y="${y+4}" font-size="9" text-anchor="end" fill="#b5b6be">${val}</text>`}).join('');
+ return `<div class="graphbox"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Grafico dei pesi nel tempo">${ylabels}<polyline points="${line}" fill="none" stroke="var(--mint)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>${pt.map(p=>`<circle cx="${p.x}" cy="${p.y}" r="4" fill="var(--mint)" stroke="#18191c" stroke-width="1.5"/>`).join('')}</svg><div class="legend"><span>${recent[0].date}</span><span>Peso serie, kg</span><span>${recent[recent.length-1].date}</span></div></div>`}
 function renderProgress(){const done=completedSessions();const exerciseOptions=DAYS.flatMap(day=>planItems(day).filter(ex=>ex.kind!=='seconds').map(ex=>({value:day.id+':'+ex.id,label:day.short+' / '+ex.name})));if(!exerciseOptions.some(x=>x.value===ui.chart))ui.chart=exerciseOptions[0]?.value||'';
  const [dKey,...parts]=ui.chart.split(':'),exId=parts.join(':');const day=DAYS.find(x=>x.id===dKey)||DAYS[0];const ex=planItems(day).find(x=>x.id===exId);const hist=ex?getHistory(day.id,ex.id):[];const entries=ex?chartEntries(day.id,ex.id):[];
  const w=data.bodyWeights.length?data.bodyWeights.slice().sort((a,b)=>b.date.localeCompare(a.date))[0]:null;
@@ -127,7 +178,7 @@ function modalTech(day,ex){const makePhoto=i=>`<div class="photo">${ex.photo?`<i
 function modalEdit(day,ex){return `<div class="modalback" data-action="backdrop"><div class="modal" role="dialog" aria-modal="true" aria-label="Modifica ${E(ex.name)}"><div class="modal-top"><div><div class="eyebrow">PERSONALIZZA L'ALLENAMENTO</div><h2>${E(ex.name)}</h2><p class="muted text-xs" style="margin-top:5px">Modifica solo se necessario, senza sacrificare il recupero.</p></div><button data-action="close-modal" aria-label="Chiudi">${icon('close')}</button></div><div class="formgroup"><label for="edit-sets">Serie</label><input id="edit-sets" class="search" type="number" min="1" max="8" value="${ex.sets}"></div><div class="two-col"><div class="formgroup"><label for="edit-low">Ripetizioni minime</label><input id="edit-low" class="search" type="number" min="1" max="100" value="${ex.low}"></div><div class="formgroup"><label for="edit-high">Ripetizioni massime</label><input id="edit-high" class="search" type="number" min="1" max="100" value="${ex.high}"></div></div><div class="two-col"><div class="formgroup"><label for="edit-rest">Recupero in secondi</label><input id="edit-rest" class="search" type="number" min="30" max="600" step="15" value="${ex.rest}"></div><div class="formgroup"><label for="edit-inc">Incremento carico (kg)</label><input id="edit-inc" class="search" type="number" min="0" max="20" step="0.5" value="${ex.inc}"></div></div><div class="formgroup"><label style="display:flex;align-items:center;gap:10px"><input id="edit-enabled" type="checkbox" checked style="width:18px;height:18px"> Esercizio attivo nella scheda</label></div><button class="btn primary btnfull" data-action="save-edit" data-dayid="${E(day.id)}" data-ex="${E(ex.id)}">${icon('check')} Salva modifiche</button><p class="helptext">I cambiamenti si applicano alle sedute successive e non cancellano lo storico.</p></div></div>`}
 function modalCustom(){return `<div class="modalback" data-action="backdrop"><div class="modal" role="dialog" aria-modal="true" aria-label="Aggiungi esercizio"><div class="modal-top"><div><div class="eyebrow">ESERCIZIO PERSONALE</div><h2>Aggiungi esercizio</h2></div><button data-action="close-modal" aria-label="Chiudi">${icon('close')}</button></div><div class="formgroup"><label for="custom-name">Nome esercizio</label><input id="custom-name" class="search" maxlength="80" placeholder="Es. Farmer walk"></div><div class="formgroup"><label for="custom-day">Giorno</label><select id="custom-day" class="search">${DAYS.map(d=>`<option value="${d.id}">${d.name} - ${d.title}</option>`).join('')}</select></div><div class="two-col"><div class="formgroup"><label for="custom-sets">Serie</label><input id="custom-sets" class="search" type="number" min="1" max="8" value="3"></div><div class="formgroup"><label for="custom-rest">Recupero (s)</label><input id="custom-rest" class="search" type="number" min="30" max="600" value="90"></div></div><div class="two-col"><div class="formgroup"><label for="custom-low">Min rep</label><input id="custom-low" class="search" type="number" min="1" max="100" value="8"></div><div class="formgroup"><label for="custom-high">Max rep</label><input id="custom-high" class="search" type="number" min="1" max="100" value="12"></div></div><button class="btn primary btnfull" data-action="save-custom">${icon('plus')} Aggiungi alla scheda</button></div></div>`}
 function showModal(){if(!ui.modal){modalRoot.innerHTML='';document.body.style.overflow='';return}let html='';if(ui.modal.mode==='custom')html=modalCustom();else{const {day,ex}=lookupExercise(ui.modal.dayId,ui.modal.exId);if(!ex){ui.modal=null;return showModal()}html=ui.modal.mode==='edit'?modalEdit(day,ex):modalTech(day,ex)}modalRoot.innerHTML=html;document.body.style.overflow='hidden';}
-function render(){let output;switch(ui.tab){case 'week':output=renderWeek();break;case 'progress':output=renderProgress();break;case 'library':output=renderLibrary();break;case 'data':output=renderData();break;default:output=renderTrain()};root.innerHTML=head()+output+nav();showModal();}
+function render(){let output;switch(ui.tab){case 'home':output=renderHome();break;case 'week':output=renderWeek();break;case 'progress':output=renderProgress();break;case 'library':output=renderLibrary();break;case 'data':output=renderData();break;default:output=renderTrain()};root.innerHTML=head()+`<main id="main-content" tabindex="-1">${output}</main>`+nav();showModal();}
 function updateWithoutJump(){const oldY=window.scrollY;render();requestAnimationFrame(()=>window.scrollTo({top:oldY,behavior:'instant'}));}
 function downloadFile(filename,text,type){const blob=new Blob([text],{type});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),3000)}
 function backupFile(){const content={app:'Bozzi Gym',schema:1,exportedAt:new Date().toISOString(),profile:window.FIT_BASELINE,data};downloadFile('BozziGym-backup-'+keyDate(new Date())+'.json',JSON.stringify(content,null,2),'application/json;charset=utf-8');toast('Backup JSON creato')}
@@ -147,9 +198,18 @@ function toggleSet(exId,ix){const day=DAYS[ui.day];const ex=planItems(day).find(
  row.done=!row.done;save();updateWithoutJump();if(row.done)toast('Serie '+(ix+1)+' registrata')}
 function toggleActivity(id){const day=DAYS[ui.day],a=day.activities.find(x=>x.id===id);if(!a)return;const s=session(day.id,ui.day,ui.shift,true);if(!s.activities[id])s.activities[id]={done:false,...(a.kind==='run'?{minutes:a.minutes,distance:'',rpe:''}:{rounds:a.rounds,roundMinutes:a.roundMinutes,rpe:''})};s.activities[id].done=!s.activities[id].done;save();updateWithoutJump();toast(s.activities[id].done?'Attività registrata':'Attività riaperta')}
 function closeSession(){const day=DAYS[ui.day],s=session(day.id,ui.day,ui.shift,true);if(s.completedAt){s.completedAt=null;save();updateWithoutJump();toast('Seduta riaperta');return}const p=progressOf(day,s);if(p.completed<p.target&&!confirm('Hai spuntato '+p.completed+' di '+p.target+' elementi. Vuoi chiudere comunque?'))return;s.completedAt=new Date().toISOString();save();updateWithoutJump();toast('Allenamento completato e salvato')}
+function openTab(tab) {
+  ui.tab = tab;
+  ui.modal = null;
+  render();
+  document.getElementById('main-content').focus({ preventScroll: true });
+  window.scrollTo({ top: 0, behavior: 'instant' });
+}
+
 function handleClick(ev){const b=ev.target.closest('[data-action]');if(!b)return;const action=b.dataset.action;
  if(action==='backdrop'){if(ev.target===b){ui.modal=null;showModal()}return}
- if(action==='tab'){ui.tab=b.dataset.tab;ui.modal=null;window.scrollTo(0,0);render();return}
+ if(action==='tab'){openTab(b.dataset.tab);return}
+ if(action==='today-workout'){Object.assign(ui,nextWorkout(today));openTab('train');return}
  if(action==='day'||action==='open-day'){ui.day=minmax(Number(b.dataset.day),0,4);if(action==='open-day')ui.tab='train';window.scrollTo(0,0);render();return}
  if(action==='shift'){ui.shift=minmax(ui.shift+Number(b.dataset.dir),-100,100);render();return}
  if(action==='scroll-workout'){document.getElementById('workout-start')?.scrollIntoView({behavior:'smooth'});return}
@@ -197,7 +257,7 @@ document.addEventListener('input',handleInput);
 document.addEventListener('change',handleChange);
 document.addEventListener('error',errorImage,true);
 document.addEventListener('keydown',ev=>{if(ev.key==='Escape'&&ui.modal){ui.modal=null;showModal()}});
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){const now=new Date();if(keyDate(now)!==keyDate(today)){today=now;ui.day=Math.min((now.getDay()+6)%7,4);ui.shift=0;render()}}});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){const now=new Date();if(keyDate(now)!==keyDate(today)){today=now;Object.assign(ui,nextWorkout(today));render()}}});
 window.addEventListener('storage',ev=>{if(ev.key===STORE){try{data={...emptyData(),...JSON.parse(ev.newValue)};render()}catch(e){}}});
 if('serviceWorker'in navigator&&/^https?:$/.test(location.protocol)){window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(e=>console.info('Offline not available',e)))}
 render();
